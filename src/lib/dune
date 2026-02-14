@@ -1,0 +1,18 @@
+(library
+ (name onnxruntime)
+ (public_name onnxruntime)
+ (libraries ctypes ctypes-foreign))
+
+; Build the C shim as a shared library that ctypes-foreign can dlopen.
+(rule
+ (targets libert_shim.so)
+ (deps ort_shim.c ort_shim.h)
+ (action
+  (run %{cc} -shared -fPIC -o %{targets}
+    -I/usr/local/include ort_shim.c
+    -L/usr/local/lib -lonnxruntime)))
+
+(install
+ (section lib)
+ (package onnxruntime)
+ (files libert_shim.so))

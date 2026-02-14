@@ -1,0 +1,2 @@
+; C source files are compiled as part of the onnxruntime library in src/lib/.
+; This directory holds the original source for reference.
