@@ -66,6 +66,9 @@ OrtStatus *ort_run(OrtSession *s,
                    const char *const *output_names, size_t n_outputs,
                    OrtValue **outputs);
 
+/* CUDA execution provider */
+OrtStatus *ort_append_cuda_provider(OrtSessionOptions *opts, int device_id);
+
 /* Cached-names run: caches input/output names in C to avoid passing
    through OCaml/ctypes on every call. */
 OrtStatus *ort_cache_session_names(OrtSession *s);
