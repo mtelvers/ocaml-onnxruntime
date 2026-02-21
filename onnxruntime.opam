@@ -6,8 +6,6 @@ synopsis: "OCaml bindings to ONNX Runtime via C shim"
 depends: [
   "ocaml" {>= "5.1.0"}
   "dune" {>= "3.0"}
-  "ctypes" {>= "0.23.0"}
-  "ctypes-foreign" {>= "0.23.0"}
 ]
 build: [
   ["dune" "build" "-p" name "-j" jobs]

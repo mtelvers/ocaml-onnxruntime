@@ -2,6 +2,7 @@
 
 #include "ort_shim.h"
 #include <onnxruntime_c_api.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -124,7 +125,30 @@ OrtStatus *ort_run(OrtSession *s,
                       output_names, n_outputs, outputs);
 }
 
-/* ---- Cached-names run: avoids passing names through OCaml/ctypes ---- */
+/* ---- CUDA execution provider ---- */
+
+OrtStatus *ort_append_cuda_provider(OrtSessionOptions *opts, int device_id) {
+    OrtCUDAProviderOptionsV2 *cuda_opts = NULL;
+    OrtStatus *status = g_ort->CreateCUDAProviderOptions(&cuda_opts);
+    if (status) return status;
+
+    const char *keys[] = {"device_id"};
+    char device_id_str[16];
+    snprintf(device_id_str, sizeof(device_id_str), "%d", device_id);
+    const char *values[] = {device_id_str};
+
+    status = g_ort->UpdateCUDAProviderOptions(cuda_opts, keys, values, 1);
+    if (status) {
+        g_ort->ReleaseCUDAProviderOptions(cuda_opts);
+        return status;
+    }
+
+    status = g_ort->SessionOptionsAppendExecutionProvider_CUDA_V2(opts, cuda_opts);
+    g_ort->ReleaseCUDAProviderOptions(cuda_opts);
+    return status;
+}
+
+/* ---- Cached-names run: avoids passing names through OCaml ---- */
 
 /* Per-session name cache (simple single-session design). */
 static char **g_cached_input_names = NULL;

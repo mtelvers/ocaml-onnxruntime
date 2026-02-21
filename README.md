@@ -1,7 +1,9 @@
 # ocaml-onnxruntime
 
 OCaml bindings to [ONNX Runtime](https://onnxruntime.ai/) via a thin C shim
-and `ctypes-foreign`.
+and OCaml's native C FFI (`external` declarations). The C shim is compiled
+into the library via dune `foreign_stubs` — no separate shared library to
+deploy, and no runtime dependencies beyond ONNX Runtime itself.
 
 Load an ONNX model, feed it float32 bigarrays, get float32 bigarrays back.
 
@@ -20,11 +22,11 @@ let () =
 
   let outputs =
     Onnxruntime.Session.run_ba session
-      [ ("input_name", input, [| 1L; 40L; 11L |]) ]
-      [ "output_name" ]
-      ~output_shapes:[ [| 128 |] ]
+      [| ("input_name", input, [| 1L; 40L; 11L |]) |]
+      [| "output_name" |]
+      ~output_sizes:[| 128 |]
   in
-  let output = List.hd outputs in
+  let output = outputs.(0) in
   Printf.printf "output[0] = %f\n" output.{0}
 ```
 
@@ -44,16 +46,25 @@ module Session : sig
   val create : Env.t -> ?threads:int -> ?cuda_device:int -> string -> t
   val run_ba :
     t ->
-    (string * (float, float32_elt, c_layout) Array1.t * int64 array) list ->
-    string list ->
-    output_shapes:int array list ->
-    (float, float32_elt, c_layout) Array1.t list
+    (string * (float, float32_elt, c_layout) Array1.t * int64 array) array ->
+    string array ->
+    output_sizes:int array ->
+    (float, float32_elt, c_layout) Array1.t array
+  val run_cached_ba :
+    t ->
+    ((float, float32_elt, c_layout) Array1.t * int64 array) array ->
+    output_sizes:int array ->
+    (float, float32_elt, c_layout) Array1.t array
 end
 ```
 
-`run_ba` takes a list of `(name, flat_data, shape)` input triples, a list of
-output names, and the expected flat size of each output. It returns one
+`run_ba` takes an array of `(name, flat_data, shape)` input triples, an array
+of output names, and the expected flat size of each output. It returns one
 bigarray per output.
+
+`run_cached_ba` is an optimised variant that uses input/output names cached
+on the C side at session creation time, avoiding string marshalling overhead
+in hot loops.
 
 ## Prerequisites
 
@@ -75,7 +86,7 @@ sudo ldconfig
 **OCaml 5.1+** with opam:
 
 ```bash
-opam install ctypes ctypes-foreign alcotest
+opam install alcotest
 ```
 
 ## Build
@@ -84,8 +95,8 @@ opam install ctypes ctypes-foreign alcotest
 dune build
 ```
 
-At runtime the C shim needs to find `libonnxruntime.so`. If it is not on the
-default linker path:
+At runtime the library needs to find `libonnxruntime.so`. If it is not on
+the default linker path:
 
 ```bash
 LD_LIBRARY_PATH=/usr/local/lib dune exec myapp/main.exe
@@ -188,14 +199,14 @@ let () =
   let s1 = Array1.create float32 c_layout (1 * 40 * 3) in
   (* ... fill s2 and s1 with normalised satellite data + day-of-year ... *)
 
-  let[@warning "-8"] [ embedding ] =
+  let outputs =
     Onnxruntime.Session.run_ba session
-      [ ("s2_input", s2, [| 1L; 40L; 11L |]);
-        ("s1_input", s1, [| 1L; 40L; 3L |]) ]
-      [ "output" ]
-      ~output_shapes:[ [| 128 |] ]
+      [| ("s2_input", s2, [| 1L; 40L; 11L |]);
+         ("s1_input", s1, [| 1L; 40L; 3L |]) |]
+      [| "output" |]
+      ~output_sizes:[| 128 |]
   in
-  Printf.printf "embedding dim = %d\n" (Array1.dim embedding)
+  Printf.printf "embedding dim = %d\n" (Array1.dim outputs.(0))
 ```
 
 ### Adapting for your own model

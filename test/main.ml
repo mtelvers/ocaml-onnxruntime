@@ -52,15 +52,16 @@ let run_inference session batch =
   let s1 = make_s1_input batch in
   let s2_shape = [| Int64.of_int batch; 40L; 11L |] in
   let s1_shape = [| Int64.of_int batch; 40L; 3L |] in
-  match
+  let outputs =
     Onnxruntime.Session.run_ba session
-      [ ("s2_input", s2, s2_shape); ("s1_input", s1, s1_shape) ]
-      [ "output" ]
-      ~output_shapes:[ [| batch * output_dim |] ]
-  with
-  | [ out ] -> out
-  | outputs ->
-    Alcotest.failf "expected 1 output, got %d" (List.length outputs)
+      [| ("s2_input", s2, s2_shape); ("s1_input", s1, s1_shape) |]
+      [| "output" |]
+      ~output_sizes:[| batch * output_dim |]
+  in
+  match outputs with
+  | [| out |] -> out
+  | _ ->
+    Alcotest.failf "expected 1 output, got %d" (Array.length outputs)
 
 let with_session f =
   let env = make_env () in
@@ -105,10 +106,10 @@ let test_wrong_input_name () =
     assert_raises_ort_error (fun () ->
       ignore (
         Onnxruntime.Session.run_ba session
-          [ ("s2_wrong", s2, [| 1L; 40L; 11L |]);
-            ("s1_input", s1, [| 1L; 40L; 3L |]) ]
-          [ "output" ]
-          ~output_shapes:[ [| output_dim |] ])))
+          [| ("s2_wrong", s2, [| 1L; 40L; 11L |]);
+             ("s1_input", s1, [| 1L; 40L; 3L |]) |]
+          [| "output" |]
+          ~output_sizes:[| output_dim |])))
 
 let test_wrong_shape () =
   with_session (fun session ->
@@ -118,10 +119,10 @@ let test_wrong_shape () =
     assert_raises_ort_error (fun () ->
       ignore (
         Onnxruntime.Session.run_ba session
-          [ ("s2_input", bad_s2, [| 1L; 10L; 11L |]);
-            ("s1_input", s1, [| 1L; 40L; 3L |]) ]
-          [ "output" ]
-          ~output_shapes:[ [| output_dim |] ])))
+          [| ("s2_input", bad_s2, [| 1L; 10L; 11L |]);
+             ("s1_input", s1, [| 1L; 40L; 3L |]) |]
+          [| "output" |]
+          ~output_sizes:[| output_dim |])))
 
 let test_repeated_runs () =
   with_session (fun session ->

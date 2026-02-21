@@ -17,31 +17,30 @@ module Session : sig
   val create : Env.t -> ?threads:int -> ?cuda_device:int -> string -> t
   (** [create env ?threads ?cuda_device model_path] loads an ONNX model.
       [threads]: number of intra-op threads (0 = default).
-      [cuda_device]: if provided, uses CUDA execution provider (not yet implemented). *)
+      [cuda_device]: if provided, uses CUDA execution provider on the given device. *)
 
   val run_ba :
     t ->
     (string *
      (float, Bigarray.float32_elt, Bigarray.c_layout) Bigarray.Array1.t *
-     int64 array) list ->
-    string list ->
-    output_shapes:int array list ->
-    (float, Bigarray.float32_elt, Bigarray.c_layout) Bigarray.Array1.t list
-  (** [run_ba session inputs output_names ~output_shapes] runs inference.
+     int64 array) array ->
+    string array ->
+    output_sizes:int array ->
+    (float, Bigarray.float32_elt, Bigarray.c_layout) Bigarray.Array1.t array
+  (** [run_ba session inputs output_names ~output_sizes] runs inference.
       Each input is [(name, flat_data, shape)] where [flat_data] is a float32
       bigarray and [shape] is the tensor shape as int64 array.
-      [output_shapes] gives the expected shape of each output (as flat sizes).
+      [output_sizes] gives the flat element count of each output.
       Returns output tensors as flat float32 bigarrays. *)
 
   val run_cached_ba :
     t ->
     ((float, Bigarray.float32_elt, Bigarray.c_layout) Bigarray.Array1.t *
-     int64 array) list ->
-    output_shapes:int array list ->
-    (float, Bigarray.float32_elt, Bigarray.c_layout) Bigarray.Array1.t list
-  (** [run_cached_ba session inputs ~output_shapes] runs inference using
+     int64 array) array ->
+    output_sizes:int array ->
+    (float, Bigarray.float32_elt, Bigarray.c_layout) Bigarray.Array1.t array
+  (** [run_cached_ba session inputs ~output_sizes] runs inference using
       C-side cached input/output names. Input/output names are determined
       from the model at session creation time. Each input is [(flat_data, shape)].
-      This avoids passing string names through ctypes on every call, preventing
-      GC-related memory corruption in hot loops. *)
+      This avoids passing string names on every call. *)
 end

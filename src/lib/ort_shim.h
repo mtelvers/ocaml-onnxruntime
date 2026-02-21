@@ -1,6 +1,6 @@
 /* ort_shim.h — Thin C shim over ONNX Runtime's function-table API.
-   Exposes the needed ORT functions as regular C functions so OCaml ctypes
-   can bind them via dlopen without modelling the 500+ field OrtApi struct. */
+   Exposes the needed ORT functions as regular C functions so the OCaml
+   C stubs can call them without modelling the 500+ field OrtApi struct. */
 
 #ifndef ORT_SHIM_H
 #define ORT_SHIM_H
@@ -66,8 +66,11 @@ OrtStatus *ort_run(OrtSession *s,
                    const char *const *output_names, size_t n_outputs,
                    OrtValue **outputs);
 
+/* CUDA execution provider */
+OrtStatus *ort_append_cuda_provider(OrtSessionOptions *opts, int device_id);
+
 /* Cached-names run: caches input/output names in C to avoid passing
-   through OCaml/ctypes on every call. */
+   them through OCaml on every call. */
 OrtStatus *ort_cache_session_names(OrtSession *s);
 OrtStatus *ort_run_cached(OrtSession *s,
                           const OrtValue *const *inputs, size_t n_inputs,
