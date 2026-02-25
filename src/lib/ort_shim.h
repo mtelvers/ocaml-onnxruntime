@@ -17,6 +17,7 @@ typedef struct OrtAllocator OrtAllocator;
 typedef struct OrtValue OrtValue;
 typedef struct OrtStatus OrtStatus;
 typedef struct OrtRunOptions OrtRunOptions;
+typedef struct OrtIoBinding OrtIoBinding;
 
 /* Initialise the global OrtApi pointer. Returns 0 on success, -1 on failure. */
 int ort_init(void);
@@ -32,6 +33,8 @@ void ort_release_env(OrtEnv *env);
 /* Session options */
 OrtStatus *ort_create_session_options(OrtSessionOptions **out);
 OrtStatus *ort_set_intra_op_threads(OrtSessionOptions *opts, int n);
+OrtStatus *ort_set_inter_op_threads(OrtSessionOptions *opts, int n);
+OrtStatus *ort_set_execution_mode_parallel(OrtSessionOptions *opts);
 OrtStatus *ort_set_graph_opt_level(OrtSessionOptions *opts, int level);
 void ort_release_session_options(OrtSessionOptions *opts);
 
@@ -67,7 +70,8 @@ OrtStatus *ort_run(OrtSession *s,
                    OrtValue **outputs);
 
 /* CUDA execution provider */
-OrtStatus *ort_append_cuda_provider(OrtSessionOptions *opts, int device_id);
+OrtStatus *ort_append_cuda_provider(OrtSessionOptions *opts, int device_id,
+                                    int enable_cuda_graph);
 
 /* Cached-names run: caches input/output names in C to avoid passing
    them through OCaml on every call. */
@@ -75,5 +79,16 @@ OrtStatus *ort_cache_session_names(OrtSession *s);
 OrtStatus *ort_run_cached(OrtSession *s,
                           const OrtValue *const *inputs, size_t n_inputs,
                           OrtValue **outputs, size_t n_outputs);
+
+/* IO binding */
+OrtStatus *ort_create_io_binding(OrtSession *s, OrtIoBinding **out);
+void ort_release_io_binding(OrtIoBinding *binding);
+OrtStatus *ort_bind_input(OrtIoBinding *binding, const char *name,
+                          const OrtValue *value);
+OrtStatus *ort_bind_output(OrtIoBinding *binding, const char *name,
+                           const OrtValue *value);
+OrtStatus *ort_run_with_binding(OrtSession *s, OrtIoBinding *binding);
+void ort_clear_bound_inputs(OrtIoBinding *binding);
+void ort_clear_bound_outputs(OrtIoBinding *binding);
 
 #endif /* ORT_SHIM_H */

@@ -12,6 +12,7 @@
 #include <caml/bigarray.h>
 
 #include <string.h>
+#include <stdlib.h>
 
 /* ------------------------------------------------------------------ */
 /* Error handling                                                      */
@@ -101,17 +102,24 @@ CAMLprim value caml_ort_create_env(value v_log_level, value v_logid) {
 }
 
 /* ------------------------------------------------------------------ */
-/* caml_ort_create_session :                                           */
-/*   ort_env -> int -> int option -> string -> ort_session             */
+/* caml_ort_create_session (7 args — needs bytecode wrapper):          */
+/*   ort_env -> int -> int option -> bool -> bool -> int ->            */
+/*   string -> ort_session                                             */
 /* ------------------------------------------------------------------ */
 
 CAMLprim value caml_ort_create_session(value v_env, value v_threads,
-                                        value v_cuda_device, value v_model_path) {
-    CAMLparam4(v_env, v_threads, v_cuda_device, v_model_path);
+                                        value v_cuda_device, value v_cuda_graph,
+                                        value v_parallel, value v_inter_op_threads,
+                                        value v_model_path) {
+    CAMLparam5(v_env, v_threads, v_cuda_device, v_cuda_graph, v_parallel);
+    CAMLxparam2(v_inter_op_threads, v_model_path);
     CAMLlocal1(v_session);
 
     OrtEnv *env = Env_val(v_env);
     int threads = Int_val(v_threads);
+    int inter_op_threads = Int_val(v_inter_op_threads);
+    int cuda_graph = Bool_val(v_cuda_graph);
+    int parallel = Bool_val(v_parallel);
     char *model_path = caml_stat_strdup(String_val(v_model_path));
 
     OrtSessionOptions *opts = NULL;
@@ -120,6 +128,25 @@ CAMLprim value caml_ort_create_session(value v_env, value v_threads,
 
     if (threads > 0) {
         status = ort_set_intra_op_threads(opts, threads);
+        if (status) {
+            caml_stat_free(model_path);
+            ort_release_session_options(opts);
+            check_ort_status(status);
+        }
+    }
+
+    /* ORT_PARALLEL execution mode + inter-op threads */
+    if (parallel) {
+        status = ort_set_execution_mode_parallel(opts);
+        if (status) {
+            caml_stat_free(model_path);
+            ort_release_session_options(opts);
+            check_ort_status(status);
+        }
+    }
+
+    if (inter_op_threads > 0) {
+        status = ort_set_inter_op_threads(opts, inter_op_threads);
         if (status) {
             caml_stat_free(model_path);
             ort_release_session_options(opts);
@@ -138,7 +165,7 @@ CAMLprim value caml_ort_create_session(value v_env, value v_threads,
     /* CUDA provider (v_cuda_device is int option) */
     if (Is_block(v_cuda_device)) {
         int device_id = Int_val(Field(v_cuda_device, 0));
-        status = ort_append_cuda_provider(opts, device_id);
+        status = ort_append_cuda_provider(opts, device_id, cuda_graph);
         if (status) {
             caml_stat_free(model_path);
             ort_release_session_options(opts);
@@ -163,6 +190,12 @@ CAMLprim value caml_ort_create_session(value v_env, value v_threads,
     Session_val(v_session) = session;
 
     CAMLreturn(v_session);
+}
+
+CAMLprim value caml_ort_create_session_bytecode(value *argv, int argn) {
+    (void)argn;
+    return caml_ort_create_session(argv[0], argv[1], argv[2],
+                                    argv[3], argv[4], argv[5], argv[6]);
 }
 
 /* ------------------------------------------------------------------ */
@@ -407,4 +440,185 @@ CAMLprim value caml_ort_run_cached_ba(value v_session, value v_input_bas,
     caml_stat_free(output_sizes);
 
     CAMLreturn(v_result);
+}
+
+/* ------------------------------------------------------------------ */
+/* IO binding                                                          */
+/* ------------------------------------------------------------------ */
+
+/* C struct wrapping OrtIoBinding plus tracked OrtValues. */
+typedef struct {
+    OrtIoBinding *binding;
+    OrtMemoryInfo *mem_info;
+    OrtValue **input_values;
+    OrtValue **output_values;
+    size_t n_inputs, n_outputs;
+    size_t input_cap, output_cap;
+} CamlIoBinding;
+
+#define IoBinding_val(v) (*((CamlIoBinding **) Data_custom_val(v)))
+
+static void finalize_io_binding(value v) {
+    CamlIoBinding *iob = IoBinding_val(v);
+    if (!iob) return;
+    for (size_t i = 0; i < iob->n_inputs; i++)
+        ort_release_value(iob->input_values[i]);
+    free(iob->input_values);
+    for (size_t i = 0; i < iob->n_outputs; i++)
+        ort_release_value(iob->output_values[i]);
+    free(iob->output_values);
+    if (iob->mem_info) ort_release_memory_info(iob->mem_info);
+    if (iob->binding) ort_release_io_binding(iob->binding);
+    free(iob);
+}
+
+static struct custom_operations io_binding_ops = {
+    "onnxruntime.io_binding",
+    finalize_io_binding,
+    custom_compare_default,
+    custom_hash_default,
+    custom_serialize_default,
+    custom_deserialize_default,
+    custom_compare_ext_default,
+    custom_fixed_length_default
+};
+
+static void iob_track_input(CamlIoBinding *iob, OrtValue *val) {
+    if (iob->n_inputs >= iob->input_cap) {
+        iob->input_cap = iob->input_cap ? iob->input_cap * 2 : 8;
+        iob->input_values = realloc(iob->input_values,
+                                     iob->input_cap * sizeof(OrtValue *));
+    }
+    iob->input_values[iob->n_inputs++] = val;
+}
+
+static void iob_track_output(CamlIoBinding *iob, OrtValue *val) {
+    if (iob->n_outputs >= iob->output_cap) {
+        iob->output_cap = iob->output_cap ? iob->output_cap * 2 : 8;
+        iob->output_values = realloc(iob->output_values,
+                                      iob->output_cap * sizeof(OrtValue *));
+    }
+    iob->output_values[iob->n_outputs++] = val;
+}
+
+/* caml_ort_create_io_binding : ort_session -> io_binding */
+CAMLprim value caml_ort_create_io_binding(value v_session) {
+    CAMLparam1(v_session);
+    CAMLlocal1(v_binding);
+
+    OrtSession *session = Session_val(v_session);
+
+    CamlIoBinding *iob = calloc(1, sizeof(CamlIoBinding));
+    if (!iob) caml_failwith("Failed to allocate IOBinding");
+
+    OrtStatus *status = ort_create_io_binding(session, &iob->binding);
+    if (status) { free(iob); check_ort_status(status); }
+
+    status = ort_create_cpu_memory_info(&iob->mem_info);
+    if (status) {
+        ort_release_io_binding(iob->binding);
+        free(iob);
+        check_ort_status(status);
+    }
+
+    v_binding = caml_alloc_custom(&io_binding_ops, sizeof(CamlIoBinding *), 0, 1);
+    IoBinding_val(v_binding) = iob;
+
+    CAMLreturn(v_binding);
+}
+
+/* caml_ort_io_bind_input : io_binding -> string -> bigarray -> int64 array -> unit */
+CAMLprim value caml_ort_io_bind_input(value v_binding, value v_name,
+                                       value v_ba, value v_shape) {
+    CAMLparam4(v_binding, v_name, v_ba, v_shape);
+
+    CamlIoBinding *iob = IoBinding_val(v_binding);
+    char *name = caml_stat_strdup(String_val(v_name));
+    float *data = (float *)Caml_ba_data_val(v_ba);
+    int data_len = Caml_ba_array_val(v_ba)->dim[0];
+    int ndims = Wosize_val(v_shape);
+    int64_t *shape = caml_stat_alloc(ndims * sizeof(int64_t));
+    for (int j = 0; j < ndims; j++)
+        shape[j] = Int64_val(Field(v_shape, j));
+
+    OrtValue *tensor = NULL;
+    OrtStatus *status = ort_create_tensor_float(
+        iob->mem_info, data, data_len, shape, ndims, &tensor);
+    caml_stat_free(shape);
+    if (status) { caml_stat_free(name); check_ort_status(status); }
+
+    iob_track_input(iob, tensor);
+
+    status = ort_bind_input(iob->binding, name, tensor);
+    caml_stat_free(name);
+    check_ort_status(status);
+
+    CAMLreturn(Val_unit);
+}
+
+/* caml_ort_io_bind_output : io_binding -> string -> bigarray -> int64 array -> unit */
+CAMLprim value caml_ort_io_bind_output(value v_binding, value v_name,
+                                        value v_ba, value v_shape) {
+    CAMLparam4(v_binding, v_name, v_ba, v_shape);
+
+    CamlIoBinding *iob = IoBinding_val(v_binding);
+    char *name = caml_stat_strdup(String_val(v_name));
+    float *data = (float *)Caml_ba_data_val(v_ba);
+    int data_len = Caml_ba_array_val(v_ba)->dim[0];
+    int ndims = Wosize_val(v_shape);
+    int64_t *shape = caml_stat_alloc(ndims * sizeof(int64_t));
+    for (int j = 0; j < ndims; j++)
+        shape[j] = Int64_val(Field(v_shape, j));
+
+    OrtValue *tensor = NULL;
+    OrtStatus *status = ort_create_tensor_float(
+        iob->mem_info, data, data_len, shape, ndims, &tensor);
+    caml_stat_free(shape);
+    if (status) { caml_stat_free(name); check_ort_status(status); }
+
+    iob_track_output(iob, tensor);
+
+    status = ort_bind_output(iob->binding, name, tensor);
+    caml_stat_free(name);
+    check_ort_status(status);
+
+    CAMLreturn(Val_unit);
+}
+
+/* caml_ort_io_run : ort_session -> io_binding -> unit */
+CAMLprim value caml_ort_io_run(value v_session, value v_binding) {
+    CAMLparam2(v_session, v_binding);
+
+    OrtSession *session = Session_val(v_session);
+    CamlIoBinding *iob = IoBinding_val(v_binding);
+
+    check_ort_status(ort_run_with_binding(session, iob->binding));
+
+    CAMLreturn(Val_unit);
+}
+
+/* caml_ort_io_clear_inputs : io_binding -> unit */
+CAMLprim value caml_ort_io_clear_inputs(value v_binding) {
+    CAMLparam1(v_binding);
+
+    CamlIoBinding *iob = IoBinding_val(v_binding);
+    ort_clear_bound_inputs(iob->binding);
+    for (size_t i = 0; i < iob->n_inputs; i++)
+        ort_release_value(iob->input_values[i]);
+    iob->n_inputs = 0;
+
+    CAMLreturn(Val_unit);
+}
+
+/* caml_ort_io_clear_outputs : io_binding -> unit */
+CAMLprim value caml_ort_io_clear_outputs(value v_binding) {
+    CAMLparam1(v_binding);
+
+    CamlIoBinding *iob = IoBinding_val(v_binding);
+    ort_clear_bound_outputs(iob->binding);
+    for (size_t i = 0; i < iob->n_outputs; i++)
+        ort_release_value(iob->output_values[i]);
+    iob->n_outputs = 0;
+
+    CAMLreturn(Val_unit);
 }

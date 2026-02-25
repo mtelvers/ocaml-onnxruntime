@@ -154,6 +154,56 @@ let test_env_log_levels () =
                 (Printf.sprintf "level_%d" level)))
     [ 0; 1; 2; 3; 4 ]
 
+let test_io_binding () =
+  with_session (fun session ->
+    let s2 = make_s2_input 1 in
+    let s1 = make_s1_input 1 in
+    let out = Array1.create float32 c_layout output_dim in
+    Array1.fill out 0.0;
+    let binding = Onnxruntime.Io_binding.create session in
+    Onnxruntime.Io_binding.bind_input binding "s2_input" s2 [| 1L; 40L; 11L |];
+    Onnxruntime.Io_binding.bind_input binding "s1_input" s1 [| 1L; 40L; 3L |];
+    Onnxruntime.Io_binding.bind_output binding "output" out [| 1L; 128L |];
+    Onnxruntime.Io_binding.run binding;
+    assert_matches_reference out)
+
+let test_io_binding_repeated () =
+  with_session (fun session ->
+    let s2 = make_s2_input 1 in
+    let s1 = make_s1_input 1 in
+    let out = Array1.create float32 c_layout output_dim in
+    let binding = Onnxruntime.Io_binding.create session in
+    Onnxruntime.Io_binding.bind_input binding "s2_input" s2 [| 1L; 40L; 11L |];
+    Onnxruntime.Io_binding.bind_input binding "s1_input" s1 [| 1L; 40L; 3L |];
+    Onnxruntime.Io_binding.bind_output binding "output" out [| 1L; 128L |];
+    for _ = 1 to 5 do
+      Onnxruntime.Io_binding.run binding;
+      assert_matches_reference out
+    done)
+
+let test_io_binding_clear_rebind () =
+  with_session (fun session ->
+    let s2 = make_s2_input 1 in
+    let s1 = make_s1_input 1 in
+    let out = Array1.create float32 c_layout output_dim in
+    let binding = Onnxruntime.Io_binding.create session in
+    Onnxruntime.Io_binding.bind_input binding "s2_input" s2 [| 1L; 40L; 11L |];
+    Onnxruntime.Io_binding.bind_input binding "s1_input" s1 [| 1L; 40L; 3L |];
+    Onnxruntime.Io_binding.bind_output binding "output" out [| 1L; 128L |];
+    Onnxruntime.Io_binding.run binding;
+    assert_matches_reference out;
+    (* Clear and rebind *)
+    Onnxruntime.Io_binding.clear_inputs binding;
+    Onnxruntime.Io_binding.clear_outputs binding;
+    Array1.fill out 0.0;
+    let s2' = make_s2_input 1 in
+    let s1' = make_s1_input 1 in
+    Onnxruntime.Io_binding.bind_input binding "s2_input" s2' [| 1L; 40L; 11L |];
+    Onnxruntime.Io_binding.bind_input binding "s1_input" s1' [| 1L; 40L; 3L |];
+    Onnxruntime.Io_binding.bind_output binding "output" out [| 1L; 128L |];
+    Onnxruntime.Io_binding.run binding;
+    assert_matches_reference out)
+
 (* ------------------------------------------------------------------ *)
 (* Runner                                                              *)
 (* ------------------------------------------------------------------ *)
@@ -179,4 +229,11 @@ let () =
       ( "env",
         [ Alcotest.test_case "log levels 0-4" `Quick
             test_env_log_levels ] );
+      ( "io_binding",
+        [ Alcotest.test_case "basic io_binding" `Quick
+            test_io_binding;
+          Alcotest.test_case "repeated runs" `Quick
+            test_io_binding_repeated;
+          Alcotest.test_case "clear and rebind" `Quick
+            test_io_binding_clear_rebind ] );
     ]

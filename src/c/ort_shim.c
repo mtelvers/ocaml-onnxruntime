@@ -43,6 +43,14 @@ OrtStatus *ort_set_intra_op_threads(OrtSessionOptions *opts, int n) {
     return g_ort->SetIntraOpNumThreads(opts, n);
 }
 
+OrtStatus *ort_set_inter_op_threads(OrtSessionOptions *opts, int n) {
+    return g_ort->SetInterOpNumThreads(opts, n);
+}
+
+OrtStatus *ort_set_execution_mode_parallel(OrtSessionOptions *opts) {
+    return g_ort->SetSessionExecutionMode(opts, ORT_PARALLEL);
+}
+
 OrtStatus *ort_set_graph_opt_level(OrtSessionOptions *opts, int level) {
     return g_ort->SetSessionGraphOptimizationLevel(
         opts, (GraphOptimizationLevel)level);
@@ -127,17 +135,18 @@ OrtStatus *ort_run(OrtSession *s,
 
 /* ---- CUDA execution provider ---- */
 
-OrtStatus *ort_append_cuda_provider(OrtSessionOptions *opts, int device_id) {
+OrtStatus *ort_append_cuda_provider(OrtSessionOptions *opts, int device_id,
+                                    int enable_cuda_graph) {
     OrtCUDAProviderOptionsV2 *cuda_opts = NULL;
     OrtStatus *status = g_ort->CreateCUDAProviderOptions(&cuda_opts);
     if (status) return status;
 
-    const char *keys[] = {"device_id"};
+    const char *keys[] = {"device_id", "enable_cuda_graph"};
     char device_id_str[16];
     snprintf(device_id_str, sizeof(device_id_str), "%d", device_id);
-    const char *values[] = {device_id_str};
+    const char *values[] = {device_id_str, enable_cuda_graph ? "1" : "0"};
 
-    status = g_ort->UpdateCUDAProviderOptions(cuda_opts, keys, values, 1);
+    status = g_ort->UpdateCUDAProviderOptions(cuda_opts, keys, values, 2);
     if (status) {
         g_ort->ReleaseCUDAProviderOptions(cuda_opts);
         return status;
@@ -148,8 +157,9 @@ OrtStatus *ort_append_cuda_provider(OrtSessionOptions *opts, int device_id) {
     return status;
 }
 
-/* ---- Cached-names run: avoids passing names through OCaml/ctypes ---- */
+/* ---- Cached-names run: avoids passing names through OCaml ---- */
 
+/* Per-session name cache (simple single-session design). */
 static char **g_cached_input_names = NULL;
 static char **g_cached_output_names = NULL;
 static size_t g_cached_n_inputs = 0;
@@ -160,6 +170,7 @@ OrtStatus *ort_cache_session_names(OrtSession *s) {
     OrtStatus *status = g_ort->GetAllocatorWithDefaultOptions(&alloc);
     if (status) return status;
 
+    /* Free any previously cached names */
     if (g_cached_input_names) {
         for (size_t i = 0; i < g_cached_n_inputs; i++)
             free(g_cached_input_names[i]);
@@ -171,6 +182,7 @@ OrtStatus *ort_cache_session_names(OrtSession *s) {
         free(g_cached_output_names);
     }
 
+    /* Cache input names */
     status = g_ort->SessionGetInputCount(s, &g_cached_n_inputs);
     if (status) return status;
     g_cached_input_names = (char **)malloc(g_cached_n_inputs * sizeof(char *));
@@ -182,6 +194,7 @@ OrtStatus *ort_cache_session_names(OrtSession *s) {
         g_ort->AllocatorFree(alloc, name);
     }
 
+    /* Cache output names */
     status = g_ort->SessionGetOutputCount(s, &g_cached_n_outputs);
     if (status) return status;
     g_cached_output_names = (char **)malloc(g_cached_n_outputs * sizeof(char *));
@@ -193,15 +206,47 @@ OrtStatus *ort_cache_session_names(OrtSession *s) {
         g_ort->AllocatorFree(alloc, name);
     }
 
-    return NULL;
+    return NULL; /* success */
 }
 
 OrtStatus *ort_run_cached(OrtSession *s,
                           const OrtValue *const *inputs, size_t n_inputs,
                           OrtValue **outputs, size_t n_outputs) {
     if (!g_cached_input_names || !g_cached_output_names)
-        return NULL;
+        return NULL; /* caller should have called ort_cache_session_names first */
     return g_ort->Run(s, NULL,
                       (const char *const *)g_cached_input_names, inputs, n_inputs,
                       (const char *const *)g_cached_output_names, n_outputs, outputs);
+}
+
+/* ---- IO binding ---- */
+
+OrtStatus *ort_create_io_binding(OrtSession *s, OrtIoBinding **out) {
+    return g_ort->CreateIoBinding(s, out);
+}
+
+void ort_release_io_binding(OrtIoBinding *binding) {
+    if (g_ort && binding) g_ort->ReleaseIoBinding(binding);
+}
+
+OrtStatus *ort_bind_input(OrtIoBinding *binding, const char *name,
+                          const OrtValue *value) {
+    return g_ort->BindInput(binding, name, value);
+}
+
+OrtStatus *ort_bind_output(OrtIoBinding *binding, const char *name,
+                           const OrtValue *value) {
+    return g_ort->BindOutput(binding, name, value);
+}
+
+OrtStatus *ort_run_with_binding(OrtSession *s, OrtIoBinding *binding) {
+    return g_ort->RunWithBinding(s, NULL, binding);
+}
+
+void ort_clear_bound_inputs(OrtIoBinding *binding) {
+    if (g_ort && binding) g_ort->ClearBoundInputs(binding);
+}
+
+void ort_clear_bound_outputs(OrtIoBinding *binding) {
+    if (g_ort && binding) g_ort->ClearBoundOutputs(binding);
 }

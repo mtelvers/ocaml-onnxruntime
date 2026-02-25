@@ -43,7 +43,14 @@ end
 
 module Session : sig
   type t
-  val create : Env.t -> ?threads:int -> ?cuda_device:int -> string -> t
+  val create :
+    Env.t ->
+    ?threads:int ->
+    ?inter_op_threads:int ->
+    ?parallel:bool ->
+    ?cuda_device:int ->
+    ?cuda_graph:bool ->
+    string -> t
   val run_ba :
     t ->
     (string * (float, float32_elt, c_layout) Array1.t * int64 array) array ->
@@ -56,6 +63,16 @@ module Session : sig
     output_sizes:int array ->
     (float, float32_elt, c_layout) Array1.t array
 end
+
+module Io_binding : sig
+  type t
+  val create : Session.t -> t
+  val bind_input  : t -> string -> (float, float32_elt, c_layout) Array1.t -> int64 array -> unit
+  val bind_output : t -> string -> (float, float32_elt, c_layout) Array1.t -> int64 array -> unit
+  val run : t -> unit
+  val clear_inputs  : t -> unit
+  val clear_outputs : t -> unit
+end
 ```
 
 `run_ba` takes an array of `(name, flat_data, shape)` input triples, an array
@@ -65,6 +82,40 @@ bigarray per output.
 `run_cached_ba` is an optimised variant that uses input/output names cached
 on the C side at session creation time, avoiding string marshalling overhead
 in hot loops.
+
+### Session options
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `~threads` | `0` (ORT default) | Intra-op parallelism threads |
+| `~inter_op_threads` | `0` (ORT default) | Inter-op parallelism threads |
+| `~parallel` | `false` | Set `ORT_PARALLEL` execution mode — runs independent graph nodes concurrently |
+| `~cuda_device` | none | Enable CUDA execution provider on the given device id |
+| `~cuda_graph` | `false` | When CUDA is enabled, capture the inference graph on GPU so subsequent runs skip CPU-side launch overhead |
+
+### IO binding
+
+`Io_binding` lets you bind pre-allocated bigarrays as inputs and outputs once,
+then call `run` repeatedly. ORT reads input data from and writes results
+directly into the bound bigarrays, avoiding per-call tensor creation and name
+resolution. This is the fastest inference path, especially when combined with
+CUDA graph capture.
+
+```ocaml
+let binding = Onnxruntime.Io_binding.create session in
+Onnxruntime.Io_binding.bind_input  binding "input"  in_ba  [| 1L; 3L; 224L; 224L |];
+Onnxruntime.Io_binding.bind_output binding "output" out_ba [| 1L; 1000L |];
+
+(* Hot loop — update in_ba in-place, call run, read out_ba *)
+for _ = 1 to 1000 do
+  (* ... fill in_ba with new data ... *)
+  Onnxruntime.Io_binding.run binding
+  (* out_ba now contains the results *)
+done
+```
+
+Use `clear_inputs` / `clear_outputs` to unbind and rebind to different
+bigarrays if needed.
 
 ## Prerequisites
 
@@ -225,7 +276,8 @@ The export pattern works for any PyTorch model:
 ```
 src/
   lib/
-    onnxruntime.ml[i]   OCaml API (Env, Session, Ort_error)
+    onnxruntime.ml[i]   OCaml API (Env, Session, Io_binding, Ort_error)
+    ort_stubs.c          OCaml C FFI stubs
     ort_shim.c/.h        C shim over the ONNX Runtime C API
   c/
     ort_shim.c/.h        Reference copy of the C sources
