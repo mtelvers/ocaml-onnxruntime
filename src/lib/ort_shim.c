@@ -141,12 +141,12 @@ OrtStatus *ort_append_cuda_provider(OrtSessionOptions *opts, int device_id,
     OrtStatus *status = g_ort->CreateCUDAProviderOptions(&cuda_opts);
     if (status) return status;
 
-    const char *keys[] = {"device_id", "enable_cuda_graph"};
+    const char *keys[] = {"device_id"};
     char device_id_str[16];
     snprintf(device_id_str, sizeof(device_id_str), "%d", device_id);
-    const char *values[] = {device_id_str, enable_cuda_graph ? "1" : "0"};
+    const char *values[] = {device_id_str};
 
-    status = g_ort->UpdateCUDAProviderOptions(cuda_opts, keys, values, 2);
+    status = g_ort->UpdateCUDAProviderOptions(cuda_opts, keys, values, 1);
     if (status) {
         g_ort->ReleaseCUDAProviderOptions(cuda_opts);
         return status;
