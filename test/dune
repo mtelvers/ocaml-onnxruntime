@@ -1,3 +1,4 @@
-(executable
- (name main)
- (libraries onnxruntime alcotest))
+(tests
+ (names main)
+ (libraries onnxruntime alcotest)
+ (deps minimal.onnx pi.onnx mandelbrot.onnx))
